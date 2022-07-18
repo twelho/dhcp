@@ -525,6 +525,35 @@ func (c *Client) RequestFromOffer(ctx context.Context, offer *dhcpv4.DHCPv4, mod
 	return lease, nil
 }
 
+// InformFromOffer sends an Inform request and waits for a response.
+func (c *Client) InformFromOffer(ctx context.Context, offer *dhcpv4.DHCPv4, modifiers ...dhcpv4.Modifier) (*dhcpv4.DHCPv4, error) {
+	// RFC 2131, Section 4.4.1, Table 5 details what an INFORM packet should contain.
+	request, err := dhcpv4.NewInformFromOffer(offer, dhcpv4.PrependModifiers(modifiers,
+		dhcpv4.WithOption(dhcpv4.OptMaxMessageSize(dhcpv4.MaxMessageSize)))...)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create an inform request: %w", err)
+	}
+
+	// Servers are supposed to only respond to Requests containing their server identifier,
+	// but sometimes non-compliant servers respond anyway.
+	// Clients are not required to validate this field, but servers are required to
+	// include the server identifier in their Offer per RFC 2131 Section 4.3.1 Table 3.
+	response, err := c.SendAndRead(ctx, c.serverAddr, request, IsAll(
+		IsCorrectServer(offer.ServerIdentifier()),
+		IsMessageType(dhcpv4.MessageTypeAck, dhcpv4.MessageTypeNak)))
+	if err != nil {
+		return nil, fmt.Errorf("got an error while processing the request: %w", err)
+	}
+	if response.MessageType() == dhcpv4.MessageTypeNak {
+		return nil, &ErrNak{
+			Offer: offer,
+			Nak:   response,
+		}
+	}
+
+	return response, nil
+}
+
 // ErrTransactionIDInUse is returned if there were an attempt to send a message
 // with the same TransactionID as we are already waiting an answer for.
 type ErrTransactionIDInUse struct {

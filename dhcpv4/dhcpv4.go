@@ -264,6 +264,17 @@ func NewRenewFromOffer(offer *DHCPv4, modifiers ...Modifier) (*DHCPv4, error) {
 	)...)
 }
 
+// NewInformFromOffer builds a new DHCPv4 Informational message from the given
+// offer with the specified hardware address.
+func NewInformFromOffer(offer *DHCPv4, modifiers ...Modifier) (*DHCPv4, error) {
+	// INFORM requests must have a unique transaction ID which is created by New
+	return New(PrependModifiers(modifiers,
+		WithReply(offer),
+		WithMessageType(MessageTypeInform),
+		WithClientIP(offer.YourIPAddr),
+	)...)
+}
+
 // NewReplyFromRequest builds a DHCPv4 reply from a request.
 func NewReplyFromRequest(request *DHCPv4, modifiers ...Modifier) (*DHCPv4, error) {
 	return New(PrependModifiers(modifiers,
