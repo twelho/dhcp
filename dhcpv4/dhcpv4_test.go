@@ -303,6 +303,50 @@ func TestDHCPv4NewRenewFromOfferWithModifier(t *testing.T) {
 	require.Contains(t, req.UserClass(), "linuxboot")
 }
 
+func TestDHCPv4NewInformFromOffer(t *testing.T) {
+	offer, err := New()
+	require.NoError(t, err)
+	offer.SetBroadcast()
+	offer.UpdateOption(OptMessageType(MessageTypeOffer))
+	offer.ClientHWAddr = net.HardwareAddr{1, 2, 3, 4, 5, 6}
+	offer.YourIPAddr = net.IPv4(192, 168, 0, 1)
+
+	// Broadcast request
+	var req *DHCPv4
+	req, err = NewInformFromOffer(offer)
+	require.NoError(t, err)
+	require.Equal(t, offer.ClientHWAddr, req.ClientHWAddr)
+	require.Equal(t, MessageTypeInform, req.MessageType())
+	require.Equal(t, offer.YourIPAddr, req.ClientIPAddr)
+	// This should always be unicast even if the offer is broadcast
+	require.False(t, req.IsUnicast())
+	require.True(t, req.IsBroadcast())
+	// IsOptionRequested can't be checked here as it will return
+	// true for any option if no parameters are requested.
+	require.Empty(t, req.ParameterRequestList())
+	// The INFORM request should have its own transaction ID
+	require.NotEqual(t, offer.TransactionID, req.TransactionID)
+
+	// Unicast request
+	offer.SetUnicast()
+	req, err = NewInformFromOffer(offer)
+	require.NoError(t, err)
+	require.True(t, req.IsUnicast())
+	require.False(t, req.IsBroadcast())
+}
+
+func TestDHCPv4NewInformFromOfferWithModifier(t *testing.T) {
+	offer, err := New()
+	require.NoError(t, err)
+	offer.UpdateOption(OptMessageType(MessageTypeOffer))
+	offer.UpdateOption(OptServerIdentifier(net.IPv4(192, 168, 0, 1)))
+	userClass := WithUserClass("linuxboot", false)
+	req, err := NewInformFromOffer(offer, userClass)
+	require.NoError(t, err)
+	require.Equal(t, MessageTypeInform, req.MessageType())
+	require.Equal(t, req.GetOneOption(OptionUserClassInformation), []byte("linuxboot"))
+}
+
 func TestNewReplyFromRequest(t *testing.T) {
 	discover, err := New()
 	require.NoError(t, err)
