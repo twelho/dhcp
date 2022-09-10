@@ -641,16 +641,22 @@ func (c *Client) SendAndRead(ctx context.Context, dest *net.UDPAddr, p *dhcpv4.D
 }
 
 // TransactAckNak exposes a higher-level API than SendAndRead for sending a given request (any type)
-// and receiving an ACK/NAK response. The server identifier is validated, responses are type checked,
-// and NAK responses are automatically returned as errors.
+// and receiving an ACK/NAK response. The server identifier is validated (if given), responses are
+// type checked, and NAK responses are automatically returned as errors.
 func (c *Client) TransactAckNak(ctx context.Context, request *dhcpv4.DHCPv4) (*dhcpv4.DHCPv4, error) {
+	matchers := []Matcher{IsMessageType(dhcpv4.MessageTypeAck, dhcpv4.MessageTypeNak)}
+
 	// Servers are supposed to only respond to Requests containing their server identifier,
 	// but sometimes non-compliant servers respond anyway.
-	// Clients are not required to validate this field, but servers are required to
-	// include the server identifier in their Offer per RFC 2131 Section 4.3.1 Table 3.
-	response, err := c.SendAndRead(ctx, c.serverAddr, request, IsAll(
-		IsCorrectServer(request.ServerIdentifier()),
-		IsMessageType(dhcpv4.MessageTypeAck, dhcpv4.MessageTypeNak)))
+	// Clients are not required to validate this field. Servers are required to include
+	// the server identifier in their Offer per RFC 2131 Section 4.3.1 Table 3, but it is
+	// not mandatory for e.g. INFORM requests if the client does not explicitly request it.
+	identifier := request.ServerIdentifier()
+	if identifier != nil {
+		matchers = append(matchers, IsCorrectServer(identifier))
+	}
+
+	response, err := c.SendAndRead(ctx, c.serverAddr, request, IsAll(matchers...))
 	if err != nil {
 		return nil, fmt.Errorf("got an error while processing the request: %w", err)
 	}
