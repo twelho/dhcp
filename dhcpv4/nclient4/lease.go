@@ -65,8 +65,8 @@ func (c *Client) Renew(ctx context.Context, lease *Lease, modifiers ...dhcpv4.Mo
 	}
 	if response.MessageType() == dhcpv4.MessageTypeNak {
 		return &ErrNak{
-			Offer: lease.Offer,
-			Nak:   response,
+			Request: lease.Offer,
+			Nak:     response,
 		}
 	}
 

@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build go1.12
 // +build go1.12
 
 // Package nclient4 is a small, minimum-functionality client for DHCPv4.
@@ -469,19 +470,35 @@ func (c *Client) DiscoverOffer(ctx context.Context, modifiers ...dhcpv4.Modifier
 // Request completes the 4-way Discover-Offer-Request-Ack handshake.
 //
 // Note that modifiers will be applied *both* to Discover and Request packets.
-func (c *Client) Request(ctx context.Context, modifiers ...dhcpv4.Modifier) (lease *Lease, err error) {
+func (c *Client) Request(ctx context.Context, modifiers ...dhcpv4.Modifier) (*Lease, error) {
 	offer, err := c.DiscoverOffer(ctx, modifiers...)
 	if err != nil {
-		err = fmt.Errorf("unable to receive an offer: %w", err)
-		return
+		return nil, fmt.Errorf("unable to receive an offer: %w", err)
 	}
-	return c.RequestFromOffer(ctx, offer, modifiers...)
+
+	// TODO(chrisko): should this be unicast to the server?
+	request, err := dhcpv4.NewRequestFromOffer(offer, dhcpv4.PrependModifiers(modifiers,
+		dhcpv4.WithOption(dhcpv4.OptMaxMessageSize(MaxMessageSize)))...)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create a request: %w", err)
+	}
+
+	response, err := c.TransactAckNak(ctx, request)
+	if err != nil {
+		return nil, fmt.Errorf("transaction failed: %w", err)
+	}
+
+	return &Lease{
+		Offer:        offer,
+		ACK:          response,
+		CreationTime: time.Now(),
+	}, nil
 }
 
 // ErrNak is returned if a DHCP server rejected our Request.
 type ErrNak struct {
-	Offer *dhcpv4.DHCPv4
-	Nak   *dhcpv4.DHCPv4
+	Request *dhcpv4.DHCPv4
+	Nak     *dhcpv4.DHCPv4
 }
 
 // Error implements error.Error.
@@ -490,39 +507,6 @@ func (e *ErrNak) Error() string {
 		return fmt.Sprintf("server rejected request with Nak (msg: %s)", msg)
 	}
 	return "server rejected request with Nak"
-}
-
-// RequestFromOffer sends a Request message and waits for an response.
-// It assumes the SELECTING state by default, see Section 4.3.2 in RFC 2131 for more details.
-func (c *Client) RequestFromOffer(ctx context.Context, offer *dhcpv4.DHCPv4, modifiers ...dhcpv4.Modifier) (*Lease, error) {
-	// TODO(chrisko): should this be unicast to the server?
-	request, err := dhcpv4.NewRequestFromOffer(offer, dhcpv4.PrependModifiers(modifiers,
-		dhcpv4.WithOption(dhcpv4.OptMaxMessageSize(MaxMessageSize)))...)
-	if err != nil {
-		return nil, fmt.Errorf("unable to create a request: %w", err)
-	}
-
-	// Servers are supposed to only respond to Requests containing their server identifier,
-	// but sometimes non-compliant servers respond anyway.
-	// Clients are not required to validate this field, but servers are required to
-	// include the server identifier in their Offer per RFC 2131 Section 4.3.1 Table 3.
-	response, err := c.SendAndRead(ctx, c.serverAddr, request, IsAll(
-		IsCorrectServer(offer.ServerIdentifier()),
-		IsMessageType(dhcpv4.MessageTypeAck, dhcpv4.MessageTypeNak)))
-	if err != nil {
-		return nil, fmt.Errorf("got an error while processing the request: %w", err)
-	}
-	if response.MessageType() == dhcpv4.MessageTypeNak {
-		return nil, &ErrNak{
-			Offer: offer,
-			Nak:   response,
-		}
-	}
-	lease := &Lease{}
-	lease.ACK = response
-	lease.Offer = offer
-	lease.CreationTime = time.Now()
-	return lease, nil
 }
 
 // InformFromOffer sends an Inform request and waits for a response.
@@ -546,8 +530,8 @@ func (c *Client) InformFromOffer(ctx context.Context, offer *dhcpv4.DHCPv4, modi
 	}
 	if response.MessageType() == dhcpv4.MessageTypeNak {
 		return nil, &ErrNak{
-			Offer: offer,
-			Nak:   response,
+			Request: offer,
+			Nak:     response,
 		}
 	}
 
@@ -653,6 +637,30 @@ func (c *Client) SendAndRead(ctx context.Context, dest *net.UDPAddr, p *dhcpv4.D
 	if err != nil {
 		return nil, err
 	}
+	return response, nil
+}
+
+// TransactAckNak exposes a higher-level API than SendAndRead for sending a given request (any type)
+// and receiving an ACK/NAK response. The server identifier is validated, responses are type checked,
+// and NAK responses are automatically returned as errors.
+func (c *Client) TransactAckNak(ctx context.Context, request *dhcpv4.DHCPv4) (*dhcpv4.DHCPv4, error) {
+	// Servers are supposed to only respond to Requests containing their server identifier,
+	// but sometimes non-compliant servers respond anyway.
+	// Clients are not required to validate this field, but servers are required to
+	// include the server identifier in their Offer per RFC 2131 Section 4.3.1 Table 3.
+	response, err := c.SendAndRead(ctx, c.serverAddr, request, IsAll(
+		IsCorrectServer(request.ServerIdentifier()),
+		IsMessageType(dhcpv4.MessageTypeAck, dhcpv4.MessageTypeNak)))
+	if err != nil {
+		return nil, fmt.Errorf("got an error while processing the request: %w", err)
+	}
+	if response.MessageType() == dhcpv4.MessageTypeNak {
+		return nil, &ErrNak{
+			Request: request,
+			Nak:     response,
+		}
+	}
+
 	return response, nil
 }
 
